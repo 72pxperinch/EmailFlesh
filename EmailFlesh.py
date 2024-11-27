@@ -7,45 +7,112 @@ import threading
 import time
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
+import sys
+import os.path
+import logging
 
 # Global flags and state variables
-paused = False
 stop_requested = False
-progress_data = {}
+progress_data = {
+    'emails': {}  # Will store progress for each email address
+}
 
 # File to store progress
-PROGRESS_FILE = "progress.json"
+PROGRESS_FILE = os.path.join(os.path.expanduser("~/Library/Application Support/EmailFlesh"), "progress.json")
 
-def save_progress(last_processed):
-    # Store only the email ID or index, not the entire message object
-    progress_data["last_processed"] = last_processed
+# Ensure the application support directory exists
+os.makedirs(os.path.dirname(PROGRESS_FILE), exist_ok=True)
+
+# Set up logging
+log_file = os.path.join(os.path.expanduser("~/Library/Logs/EmailFlesh"), "app.log")
+os.makedirs(os.path.dirname(log_file), exist_ok=True)
+
+logging.basicConfig(
+    filename=log_file,
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+try:
+    logging.debug("Application starting...")
+    logging.debug(f"Python version: {sys.version}")
+    logging.debug(f"Current working directory: {os.getcwd()}")
+    logging.debug(f"System platform: {sys.platform}")
+except Exception as e:
+    logging.error(f"Error during startup logging: {e}")
+
+def handle_exception(exc_type, exc_value, exc_traceback):
+    """Handle uncaught exceptions by showing them in a message box"""
+    import traceback
+    error_msg = ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+    messagebox.showerror('Error', f'An unexpected error occurred:\n\n{error_msg}')
+
+# Install the error handler
+sys.excepthook = handle_exception
+
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
     try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
+
+def save_progress(email_address, last_processed):
+    # Store progress for specific email address
+    if 'emails' not in progress_data:
+        progress_data['emails'] = {}
+        
+    progress_data['emails'][email_address] = {
+        'last_processed': last_processed,
+        'last_updated': time.time()  # Add timestamp
+    }
+    try:
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(PROGRESS_FILE), exist_ok=True)
+        
         with open(PROGRESS_FILE, "w") as f:
-            json.dump(progress_data, f)
+            json.dump(progress_data, f, indent=4)  # Added indent for readability
     except Exception as e:
-        print(f"Error saving progress: {e}")
+        logging.error(f"Error saving progress: {e}")
 
 def load_progress():
     global progress_data
-    if os.path.exists(PROGRESS_FILE):
-        try:
+    try:
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(PROGRESS_FILE), exist_ok=True)
+        
+        if os.path.exists(PROGRESS_FILE):
             with open(PROGRESS_FILE, "r") as f:
-                # Attempt to load progress from the file
                 content = f.read().strip()
-                if content:  # Check if file is not empty
-                    progress_data = json.loads(content)
+                if content:
+                    loaded_data = json.loads(content)
+                    # Validate structure
+                    if isinstance(loaded_data, dict) and 'emails' in loaded_data:
+                        progress_data = loaded_data
+                    else:
+                        progress_data = {'emails': {}}
                 else:
-                    print("Progress file is empty, starting fresh.")
-                    progress_data = {"last_processed": None}
-        except (json.JSONDecodeError, Exception) as e:
-            print(f"Error loading progress: {e}. Starting fresh.")
-            progress_data = {"last_processed": None}
-    else:
-        progress_data = {"last_processed": None}
+                    progress_data = {'emails': {}}
+        else:
+            # Create new file with empty structure
+            progress_data = {'emails': {}}
+            with open(PROGRESS_FILE, "w") as f:
+                json.dump(progress_data, f, indent=4)
+    except Exception as e:
+        logging.error(f"Error loading progress: {e}")
+        progress_data = {'emails': {}}
 
+def get_email_progress(email_address):
+    # Get progress for specific email address
+    if email_address in progress_data['emails']:
+        return progress_data['emails'][email_address]['last_processed']
+    return 0
 
 def download_attachments(email_address, password, folder_name, progress):
-    global paused, stop_requested
+    global stop_requested
 
     def log(message):
         progress.insert(tk.END, f"{message}\n")
@@ -68,11 +135,10 @@ def download_attachments(email_address, password, folder_name, progress):
         messages = messages[0].split()
         log(f"Found {len(messages)} emails.")
 
-        # Load the last processed email
-        last_processed_index = 0
-        if progress_data["last_processed"]:
-            last_processed_index = int(progress_data["last_processed"])
-            log(f"Resuming from email {last_processed_index + 1}.")
+        # Load the last processed email for this specific email address
+        last_processed_index = get_email_progress(email_address)
+        if last_processed_index > 0:
+            log(f"Resuming from email {last_processed_index + 1} for {email_address}.")
 
         # Create folder for attachments if it doesn't exist
         log(f"Using folder: {folder_name}")
@@ -84,10 +150,6 @@ def download_attachments(email_address, password, folder_name, progress):
             if stop_requested:
                 log("Download stopped by user.")
                 break
-
-            while paused:
-                log("Paused. Waiting to resume...")
-                time.sleep(1)
 
             log(f"Processing email {i}/{len(messages)}...")
             status, msg_data = mail.fetch(msg, "(RFC822)")
@@ -110,8 +172,8 @@ def download_attachments(email_address, password, folder_name, progress):
                                 f.write(part.get_payload(decode=True))
                             log(f"Saved attachment to: {filepath}")
             
-            # Save progress after processing each email by index (or Message-ID)
-            save_progress(i)  # Save the index of the last processed email
+            # Save progress after processing each email
+            save_progress(email_address, i)
 
         if not stop_requested:
             log("All emails processed.")
@@ -123,12 +185,10 @@ def download_attachments(email_address, password, folder_name, progress):
         if 'mail' in locals():
             log("Closing the connection.")
             mail.logout()
-        # Reset buttons on completion
         reset_buttons()
 
 def start_download():
-    global paused, stop_requested
-    paused = False
+    global stop_requested
     stop_requested = False
 
     email_address = email_entry.get()
@@ -139,28 +199,22 @@ def start_download():
         messagebox.showerror("Error", "Please fill in all fields!")
         return
 
-    # Disable and enable appropriate buttons
+    # Create a unique folder for each email address
+    user_folder = os.path.join(folder_name, email_address.split('@')[0])
+    if not os.path.exists(user_folder):
+        os.makedirs(user_folder)
+
+    # Update button states
     start_button["state"] = "disabled"
-    pause_button["state"] = "normal"
-    resume_button["state"] = "disabled"
     stop_button["state"] = "normal"
 
     # Start the download in a separate thread
-    download_thread = threading.Thread(target=download_attachments, args=(email_address, password, folder_name, progress))
-    download_thread.daemon = True  # Make sure the thread will close when the program exits
+    download_thread = threading.Thread(
+        target=download_attachments, 
+        args=(email_address, password, user_folder, progress)
+    )
+    download_thread.daemon = True
     download_thread.start()
-
-def pause_download():
-    global paused
-    paused = True
-    pause_button["state"] = "disabled"
-    resume_button["state"] = "normal"
-
-def resume_download():
-    global paused
-    paused = False
-    pause_button["state"] = "normal"
-    resume_button["state"] = "disabled"
 
 def stop_download():
     global stop_requested
@@ -170,26 +224,23 @@ def stop_download():
 def reset_buttons():
     # Reset button states to their initial values
     start_button["state"] = "normal"
-    pause_button["state"] = "disabled"
-    resume_button["state"] = "disabled"
     stop_button["state"] = "disabled"
 
 def choose_folder():
     selected_dir = filedialog.askdirectory()
     if selected_dir:
-        output_folder = os.path.join(selected_dir, "Email Attachments")
+        output_folder = os.path.join(selected_dir, "EmailFlesh Downloads")
         if not os.path.exists(output_folder):
             os.makedirs(output_folder)
         folder_entry.delete(0, tk.END)
         folder_entry.insert(0, output_folder)
 
-# Ensure the Output folder is created on initialization
 def ensure_default_folder():
-    # Set default folder to the "Output" directory in the current working directory
-    default_dir = os.getcwd()
-    default_folder = os.path.join(default_dir, "Email Attachments")
+    # Set default folder to a subfolder in the user's Downloads directory
+    default_dir = os.path.expanduser("~/Downloads")
+    default_folder = os.path.join(default_dir, "EmailFlesh Downloads")
     
-    # Create the "Output" folder if it doesn't exist
+    # Create the "EmailFlesh Downloads" folder if it doesn't exist
     if not os.path.exists(default_folder):
         os.makedirs(default_folder)
     
@@ -203,6 +254,35 @@ def show_info():
                                        "2. Navigate to Security > App Passwords.\n"
                                        "3. Generate a new app password for 'Mail'.\n"
                                        "4. Use the generated password in this application.")
+
+def reset_progress():
+    global progress_data
+    try:
+        email_address = email_entry.get()
+        
+        if not email_address:
+            messagebox.showerror("Error", "Please enter an email address first!")
+            return
+            
+        # Reset progress only for the current email
+        if email_address in progress_data['emails']:
+            del progress_data['emails'][email_address]
+            
+            # Save updated progress to file
+            with open(PROGRESS_FILE, "w") as f:
+                json.dump(progress_data, f, indent=4)
+                
+            # Clear progress text area
+            progress.delete(1.0, tk.END)
+            progress.insert(tk.END, f"Progress has been reset for {email_address}.\n")
+            
+            messagebox.showinfo("Success", f"Progress has been reset for {email_address}!")
+        else:
+            messagebox.showinfo("Info", f"No progress data found for {email_address}.")
+            
+    except Exception as e:
+        logging.error(f"Error resetting progress: {e}")
+        messagebox.showerror("Error", f"Failed to reset progress: {e}")
 
 # Load previous progress
 load_progress()
@@ -247,16 +327,35 @@ progress = tk.Text(frame, height=10, width=50, state="normal")
 progress.grid(column=0, row=4, columnspan=3, pady=10, sticky="NSEW")
 
 # Control buttons
-start_button = ttk.Button(frame, text="Start", command=start_download)
-start_button.grid(column=0, row=5, pady=5)
+button_frame = ttk.Frame(frame)
+button_frame.grid(column=0, row=5, columnspan=3, pady=5)
 
-pause_button = ttk.Button(frame, text="Pause", command=pause_download, state="disabled")
-pause_button.grid(column=1, row=5, pady=5)
+start_button = ttk.Button(button_frame, text="Start", command=start_download)
+start_button.pack(side=tk.LEFT, padx=5)
 
-resume_button = ttk.Button(frame, text="Resume", command=resume_download, state="disabled")
-resume_button.grid(column=2, row=5, pady=5)
+stop_button = ttk.Button(button_frame, text="Stop", command=stop_download, state="disabled")
+stop_button.pack(side=tk.LEFT, padx=5)
 
-stop_button = ttk.Button(frame, text="Stop", command=stop_download, state="disabled")
-stop_button.grid(column=3, row=5, pady=5)
+reset_progress_button = ttk.Button(button_frame, text="Reset Progress", command=reset_progress)
+reset_progress_button.pack(side=tk.LEFT, padx=5)
+
+# Add after creating the root window
+if sys.platform == 'darwin':
+    try:
+        # Make the app more native-looking on macOS
+        root.createcommand('tk::mac::ReopenApplication', lambda: root.lift())
+        
+        # Add About menu item to the application menu
+        def show_about():
+            messagebox.showinfo("About Email Attachment Downloader", 
+                              "Email Attachment Downloader v1.0\n\n"
+                              "Download email attachments easily.\n\n"
+                              "© 2024 Your Name")
+        
+        root.createcommand('tk::mac::ShowPreferences', lambda: None)  # Disable preferences
+        root.createcommand('tk::mac::ShowHelp', lambda: show_info())  # Show help
+        root.createcommand('tk::mac::AboutDialog', lambda: show_about())  # Show about dialog
+    except Exception as e:
+        logging.error(f"Error setting up macOS integration: {e}")
 
 root.mainloop()
