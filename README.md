@@ -39,13 +39,10 @@ ___
     Follow the following steps to generate an App Password:
         1. Go to Account Management of the same google account and search for `App Passwords`. (You need 2 factor Authentication for your accoun\t to enable this feature)
             ![Screenshot 2025-01-15 at 1 43 12 PM](https://github.com/user-attachments/assets/b722cc04-c4dd-4e65-aefe-055a1d91cc0c)
-
         2. Enter a name for your app password and click create
             ![Screenshot 2025-01-15 at 1 43 35 PM](https://github.com/user-attachments/assets/ff19cbbb-29dc-4a45-a860-d3798a6efe70)
-
         3. Copy the generated password
             ![Screenshot 2025-01-15 at 1 43 44 PM](https://github.com/user-attachments/assets/0b99027d-4e29-4753-a0a7-8cade28ff5b6)
-
         4. Paste it in the app
             ![Screenshot 2025-01-15 at 1 44 22 PM](https://github.com/user-attachments/assets/6d62b5a7-640d-46dd-bb46-411363cfad79)
 
